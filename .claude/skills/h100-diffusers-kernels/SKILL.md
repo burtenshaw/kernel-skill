@@ -20,10 +20,32 @@ Use this skill when:
 - Integrating kernels with diffusers pipelines (LTX-Video, Stable Diffusion, FLUX, DiT)
 - Debugging kernel performance issues on H100
 
+## Working Example
+
+A complete working example is available at `examples/ltx_video/`. This example demonstrates:
+- Custom CUDA kernels (RMSNorm, RoPE 3D, GEGLU, AdaLN) for LTX-Video
+- Build system setup with setup.py, build.toml, and flake.nix
+- PyTorch C++ bindings and Python API
+- Video generation script using diffusers
+
+**Example benchmarks on H100:**
+```
+RMSNorm [2x1024x2048]: 0.054 ms
+GEGLU [2x1024x4096]: 0.030 ms
+RoPE 3D [batch=2, seq=480, heads=8]: 1.670 ms
+```
+
 ## Project Structure
 
 ```
 hardware_kernel/
+├── examples/
+│   └── ltx_video/              # ← Complete working example
+│       ├── kernel_src/         # CUDA kernels
+│       ├── torch-ext/          # PyTorch bindings
+│       ├── setup.py            # pip install -e .
+│       ├── build.toml          # kernel-builder config
+│       └── generate_video.py   # Video generation script
 ├── build.toml              # Kernel builder config (sm_90 targeting)
 ├── kernel_src/             # CUDA kernel implementations
 │   ├── attention.cu        # Flash attention (BLOCK_SIZE_M=128, BLOCK_SIZE_N=64)
@@ -107,15 +129,56 @@ void kernel_forward_fp32(...);
 
 ## Building Kernels
 
-### With Docker (kernel-builder)
+### With Nix (Recommended)
 ```bash
-docker run --rm --mount type=bind,source=$(pwd),target=/kernelcode \
-  -w /kernelcode ghcr.io/huggingface/kernel-builder:main build
+# Build kernels
+nix run .#build-and-copy --max-jobs 2 --cores 8 -L
+
+# Or with flake
+nix flake update && nix run .#build-and-copy -L
 ```
 
-### With Nix
+### With pip/uv (Development fallback)
 ```bash
-nix run .#build-and-copy --max-jobs 2 --cores 8 -L
+# Using uv (faster)
+uv pip install -e .
+
+# Using pip
+pip install -e .
+```
+
+**setup.py example:**
+```python
+from setuptools import setup, find_packages
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+
+cuda_sources = [
+    "kernel_src/rmsnorm.cu",
+    "kernel_src/rope.cu",
+    "kernel_src/geglu.cu",
+]
+cpp_sources = ["torch-ext/torch_binding.cpp"]
+
+extra_compile_args = {
+    "cxx": ["-O3", "-std=c++17"],
+    "nvcc": [
+        "-O3", "-std=c++17", "--use_fast_math",
+        "-arch=sm_90",
+        "-gencode=arch=compute_90,code=sm_90",
+    ],
+}
+
+setup(
+    name="ltx-kernels",
+    ext_modules=[
+        CUDAExtension(
+            name="ltx_kernels._ops",
+            sources=cpp_sources + cuda_sources,
+            extra_compile_args=extra_compile_args,
+        ),
+    ],
+    cmdclass={"build_ext": BuildExtension},
+)
 ```
 
 ### build.toml Configuration
@@ -129,6 +192,21 @@ backend = "cuda"
 depends = []
 src = ["kernel_src/your_kernel.cu"]
 cuda-capabilities = ["9.0"]
+```
+
+### flake.nix Configuration
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    kernel-builder.url = "github:huggingface/kernel-builder";
+  };
+
+  outputs = { self, nixpkgs, kernel-builder }:
+    kernel-builder.lib.genFlakeOutputs {
+      path = ./.;
+    };
+}
 ```
 
 ## PyTorch Integration
@@ -228,14 +306,112 @@ nsys profile -o kernel_profile python your_script.py
 ncu --set full --csv -o metrics.csv python your_script.py
 ```
 
-## Common Issues
+## Common Issues and Solutions
 
-1. **Bank conflicts in shared memory**: Add padding for 32-bank conflict avoidance
-2. **Poor occupancy**: Check register usage with `--ptxas-options=-v`
-3. **Memory coalescing**: Ensure 128-byte aligned accesses
-4. **Warp divergence**: Use `__ballot_sync` for conditional execution
+### 1. Type Conversion Errors with FP16/BF16
+
+**Problem:** PyTorch compiles with `-D__CUDA_NO_HALF_OPERATORS__` which disables implicit type conversions:
+```
+error: no suitable conversion function from "__half" to "float" exists
+```
+
+**Solution:** Add explicit type conversion helper functions in your .cu files:
+```cuda
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
+
+// Type conversion helpers (required for PyTorch compatibility)
+__device__ __forceinline__ float to_float(float x) { return x; }
+__device__ __forceinline__ float to_float(__half x) { return __half2float(x); }
+__device__ __forceinline__ float to_float(__nv_bfloat16 x) { return __bfloat162float(x); }
+
+__device__ __forceinline__ float from_float(float x, float*) { return x; }
+__device__ __forceinline__ __half from_float(float x, __half*) { return __float2half(x); }
+__device__ __forceinline__ __nv_bfloat16 from_float(float x, __nv_bfloat16*) { return __float2bfloat16(x); }
+
+// Usage in kernels:
+float val = to_float(input[idx]);
+output[idx] = from_float(result, (scalar_t*)nullptr);
+```
+
+### 2. Missing CUDA Headers in torch_binding.cpp
+
+**Problem:** Undeclared types `__half`, `__nv_bfloat16`
+
+**Solution:** Include required headers:
+```cpp
+#include <torch/extension.h>
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
+#include <c10/cuda/CUDAGuard.h>
+```
+
+### 3. Bank Conflicts in Shared Memory
+Add padding for 32-bank conflict avoidance:
+```cuda
+__shared__ float data[32][33];  // 33 instead of 32
+```
+
+### 4. Poor Occupancy
+Check register usage:
+```bash
+nvcc --ptxas-options=-v your_kernel.cu
+```
+
+### 5. Memory Coalescing
+Ensure 128-byte aligned accesses for optimal bandwidth.
+
+### 6. Build Fails with "No module named torch"
+Add torch to build dependencies in pyproject.toml:
+```toml
+[build-system]
+requires = ["setuptools", "wheel", "torch>=2.0"]
+```
+
+## Video Generation Script Example
+
+See `examples/ltx_video/generate_video.py` for a complete example. Key usage:
+
+```bash
+# Build kernels first
+cd examples/ltx_video
+uv pip install -e .
+
+# Generate video
+uv run python generate_video.py \
+    --prompt "A golden retriever running in a park" \
+    --num-frames 25 \
+    --steps 30
+```
+
+**Script structure:**
+```python
+import torch
+from diffusers import LTXPipeline
+from diffusers.utils import export_to_video
+
+# Import custom kernels
+from ltx_kernels import rmsnorm, rope_3d, geglu
+
+# Load pipeline
+pipe = LTXPipeline.from_pretrained("Lightricks/LTX-Video", torch_dtype=torch.bfloat16)
+pipe.to("cuda")
+
+# Generate
+output = pipe(
+    prompt="A golden retriever running in a park",
+    num_frames=25,
+    height=480,
+    width=704,
+    num_inference_steps=30,
+)
+
+export_to_video(output.frames[0], "output.mp4", fps=24)
+```
 
 ## See Also
 
 - [kernel-templates.md](kernel-templates.md) - Complete kernel templates
 - [h100-optimization-guide.md](h100-optimization-guide.md) - Deep dive on H100 optimizations
+- [examples/ltx_video/](../../../examples/ltx_video/) - Complete working example

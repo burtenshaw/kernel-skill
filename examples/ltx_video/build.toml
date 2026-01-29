@@ -1,0 +1,49 @@
+# LTX-Video Custom Kernels - Build Configuration
+# Targets NVIDIA H100 (sm_90) for optimal performance
+#
+# Build with Nix (recommended):
+#   nix flake update && nix run .#build-and-copy -L
+#
+# Build with pip/uv:
+#   uv pip install -e .
+
+[general]
+name = "ltx_kernels"
+backends = ["cuda"]
+
+[general.cuda]
+# H100 compute capability
+# sm_90 = compute capability 9.0
+
+[torch]
+src = [
+    "torch-ext/torch_binding.cpp",
+]
+
+# RMSNorm kernel - used throughout LTX-Video transformer
+[kernel.rmsnorm]
+backend = "cuda"
+depends = []
+src = ["kernel_src/rmsnorm.cu"]
+cuda-capabilities = ["9.0"]
+
+# Rotary Position Embeddings (1D for text, 3D for video)
+[kernel.rope]
+backend = "cuda"
+depends = []
+src = ["kernel_src/rope.cu"]
+cuda-capabilities = ["9.0"]
+
+# GEGLU activation (gelu-approximate as used in LTX-Video FFN)
+[kernel.geglu]
+backend = "cuda"
+depends = []
+src = ["kernel_src/geglu.cu"]
+cuda-capabilities = ["9.0"]
+
+# Adaptive Layer Normalization for DiT conditioning
+[kernel.adaln]
+backend = "cuda"
+depends = []
+src = ["kernel_src/adaln.cu"]
+cuda-capabilities = ["9.0"]

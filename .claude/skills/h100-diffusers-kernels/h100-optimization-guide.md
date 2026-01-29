@@ -374,3 +374,22 @@ nvcc -arch=sm_90 -O3 your_kernel.cu
 6. **Block Size**: Start with 256, tune based on occupancy
 7. **Profile**: Use ncu to identify bottlenecks before optimizing
 8. **Fuse**: Combine operations to reduce memory traffic
+9. **Type Conversions**: Always use explicit `to_float()`/`from_float()` helpers (PyTorch disables implicit FP16/BF16 conversions)
+
+## Working Example
+
+For complete, production-ready implementations, see `examples/ltx_video/`:
+
+**Benchmark results on H100:**
+| Kernel | Shape | Time |
+|--------|-------|------|
+| RMSNorm | [2, 1024, 2048] | 0.054 ms |
+| GEGLU | [2, 1024, 4096] → [2, 1024, 2048] | 0.030 ms |
+| RoPE 3D | [2, 480, 8, 64] | 1.670 ms |
+
+**Build and test:**
+```bash
+cd examples/ltx_video
+uv pip install -e .
+uv run python generate_video.py --num-frames 13 --steps 20
+```

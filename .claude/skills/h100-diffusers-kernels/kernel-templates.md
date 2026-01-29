@@ -2,6 +2,34 @@
 
 Complete, copy-paste ready templates for implementing new kernels.
 
+## CRITICAL: Type Conversion Helpers
+
+**PyTorch compiles with `-D__CUDA_NO_HALF_OPERATORS__`** which disables implicit FP16/BF16 conversions. You MUST include these helpers in every kernel file:
+
+```cuda
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
+
+// Type conversion helpers - REQUIRED for PyTorch compatibility
+__device__ __forceinline__ float to_float(float x) { return x; }
+__device__ __forceinline__ float to_float(__half x) { return __half2float(x); }
+__device__ __forceinline__ float to_float(__nv_bfloat16 x) { return __bfloat162float(x); }
+
+__device__ __forceinline__ float from_float(float x, float*) { return x; }
+__device__ __forceinline__ __half from_float(float x, __half*) { return __float2half(x); }
+__device__ __forceinline__ __nv_bfloat16 from_float(float x, __nv_bfloat16*) { return __float2bfloat16(x); }
+```
+
+**Usage in kernels:**
+```cuda
+// Read with conversion
+float val = to_float(input[idx]);
+
+// Write with conversion (use nullptr cast for type deduction)
+output[idx] = from_float(result, (scalar_t*)nullptr);
+```
+
 ## Template 1: Element-wise Operation (RoPE style)
 
 Use this pattern for operations that process elements independently.
@@ -11,13 +39,21 @@ Use this pattern for operations that process elements independently.
  * Element-wise kernel template for H100 (sm_90)
  */
 
-#include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 #include <cmath>
 
 constexpr int BLOCK_SIZE = 256;
+
+// Type conversion helpers (include in every .cu file)
+__device__ __forceinline__ float to_float(float x) { return x; }
+__device__ __forceinline__ float to_float(__half x) { return __half2float(x); }
+__device__ __forceinline__ float to_float(__nv_bfloat16 x) { return __bfloat162float(x); }
+
+__device__ __forceinline__ float from_float(float x, float*) { return x; }
+__device__ __forceinline__ __half from_float(float x, __half*) { return __float2half(x); }
+__device__ __forceinline__ __nv_bfloat16 from_float(float x, __nv_bfloat16*) { return __float2bfloat16(x); }
 
 template <typename scalar_t>
 __global__ void your_elementwise_kernel(
@@ -28,12 +64,12 @@ __global__ void your_elementwise_kernel(
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < total_elements) {
-        float val = float(input[idx]);
+        float val = to_float(input[idx]);
 
         // Your computation here
         float result = val;  // Replace with actual operation
 
-        output[idx] = scalar_t(result);
+        output[idx] = from_float(result, (scalar_t*)nullptr);
     }
 }
 
@@ -88,7 +124,6 @@ Use for operations requiring reduction across a dimension (normalization, softma
  * Row-wise reduction kernel template for H100 (sm_90)
  */
 
-#include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
@@ -96,6 +131,15 @@ Use for operations requiring reduction across a dimension (normalization, softma
 
 constexpr int WARP_SIZE = 32;
 constexpr int MAX_THREADS = 1024;
+
+// Type conversion helpers
+__device__ __forceinline__ float to_float(float x) { return x; }
+__device__ __forceinline__ float to_float(__half x) { return __half2float(x); }
+__device__ __forceinline__ float to_float(__nv_bfloat16 x) { return __bfloat162float(x); }
+
+__device__ __forceinline__ float from_float(float x, float*) { return x; }
+__device__ __forceinline__ __half from_float(float x, __half*) { return __float2half(x); }
+__device__ __forceinline__ __nv_bfloat16 from_float(float x, __nv_bfloat16*) { return __float2bfloat16(x); }
 
 template <typename T>
 __device__ __forceinline__ T warp_reduce_sum(T val) {
@@ -140,7 +184,7 @@ __global__ void your_reduction_kernel(
     // Step 1: Compute reduction (e.g., sum of squares for RMSNorm)
     float sum_sq = 0.0f;
     for (int i = tid; i < hidden_size; i += blockDim.x) {
-        float val = float(row_input[i]);
+        float val = to_float(row_input[i]);
         sum_sq += val * val;
     }
     sum_sq = block_reduce_sum(sum_sq);
@@ -155,8 +199,8 @@ __global__ void your_reduction_kernel(
 
     // Step 3: Apply normalization
     for (int i = tid; i < hidden_size; i += blockDim.x) {
-        float normalized = float(row_input[i]) * factor;
-        row_output[i] = scalar_t(normalized * float(weight[i]));
+        float normalized = to_float(row_input[i]) * factor;
+        row_output[i] = from_float(normalized * to_float(weight[i]), (scalar_t*)nullptr);
     }
 }
 
@@ -334,16 +378,20 @@ __global__ void your_tiled_kernel(
 ## Template 4: PyTorch Binding
 
 ```cpp
-// torch_binding.cpp addition
+// torch_binding.cpp
+// IMPORTANT: Include CUDA headers for __half and __nv_bfloat16 types
 
 #include <torch/extension.h>
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>      // Required for __half
+#include <cuda_bf16.h>      // Required for __nv_bfloat16
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 
 extern "C" {
-void your_kernel_forward_fp16(const void*, void*, int, cudaStream_t);
-void your_kernel_forward_bf16(const void*, void*, int, cudaStream_t);
-void your_kernel_forward_fp32(const float*, float*, int, cudaStream_t);
+void your_kernel_forward_fp16(__half* out, const __half* in, int n, cudaStream_t);
+void your_kernel_forward_bf16(__nv_bfloat16* out, const __nv_bfloat16* in, int n, cudaStream_t);
+void your_kernel_forward_fp32(float* out, const float* in, int n, cudaStream_t);
 }
 
 void your_kernel_forward(
@@ -457,4 +505,30 @@ def test_your_kernel_with_preallocated():
     result = your_kernel(input, out=output)
 
     assert result is output  # Verify in-place
+```
+
+## Working Example Reference
+
+For complete, working implementations of all these templates, see:
+
+```
+examples/ltx_video/
+├── kernel_src/
+│   ├── rmsnorm.cu      # Row-wise reduction pattern
+│   ├── rope.cu         # Element-wise 1D/3D RoPE
+│   ├── geglu.cu        # Element-wise gated activation
+│   └── adaln.cu        # Combined reduction + element-wise
+├── torch-ext/
+│   ├── torch_binding.cpp
+│   └── ltx_kernels/__init__.py
+├── setup.py
+├── build.toml
+└── generate_video.py   # Usage with diffusers
+```
+
+Build and test with:
+```bash
+cd examples/ltx_video
+uv pip install -e .
+uv run python -c "from ltx_kernels import rmsnorm, geglu, rope_3d; print('OK')"
 ```
