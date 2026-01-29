@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "torch>=2.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ltx-kernels"
+version = "0.1.0"
+description = "Optimized CUDA kernels for Lightricks/LTX-Video on H100 GPUs"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.9"
+keywords = ["cuda", "kernels", "ltx-video", "diffusers", "h100", "video-generation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-benchmark",
+]
+diffusers = [
+    "diffusers>=0.25.0",
+    "transformers>=4.30.0",
+    "accelerate>=0.20.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/ltx-kernels"
+Documentation = "https://github.com/your-org/ltx-kernels#readme"
+Repository = "https://github.com/your-org/ltx-kernels"
+
+[tool.setuptools.packages.find]
+where = ["torch-ext"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
