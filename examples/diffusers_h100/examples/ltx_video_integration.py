@@ -7,6 +7,10 @@ Lightricks/LTX-Video model in diffusers.
 
 import torch
 from typing import Optional
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'torch-ext'))
 
 # Import custom kernels
 from ltx_kernels import (
@@ -29,15 +33,16 @@ class OptimizedLTXVideoAttnProcessor:
 
     def __init__(
         self,
-        num_frames: int,
-        height: int,
-        width: int,
+        num_frames: Optional[int] = None,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
         theta_base: float = 10000.0,
     ):
         self.num_frames = num_frames
         self.height = height
         self.width = width
         self.theta_base = theta_base
+        self._dims_inferred = False
 
     def __call__(
         self,
@@ -84,6 +89,66 @@ class OptimizedLTXVideoAttnProcessor:
         # Apply 3D RoPE for video positional encoding
         # Only apply to self-attention (not cross-attention with text)
         if encoder_hidden_states is None:
+            seq_len = query.shape[1]
+
+            # Auto-infer dimensions if not provided or if they don't match current seq_len
+            needs_inference = (
+                self.num_frames is None or
+                self.height is None or
+                self.width is None or
+                (self.num_frames * self.height * self.width != seq_len)
+            )
+
+            if needs_inference:
+                # Try to infer from sequence length
+                # Common patterns: 49x32x32, 121x32x32, 161x64x96, etc.
+                possible_configs = [
+                    # Full video sequences
+                    (49, 32, 32),   # Short video, 256x256
+                    (121, 32, 32),  # Medium video, 256x256
+                    (161, 64, 96),  # Long video, 512x768
+                    (49, 64, 96),   # Short video, 512x768
+                    (121, 64, 96),  # Medium video, 512x768
+                    # Single frame or downsampled (for hierarchical attention)
+                    (1, 84, 96),    # Single frame, 672x768
+                    (1, 126, 64),   # Single frame, 1008x512
+                    (1, 64, 96),    # Single frame, 512x768
+                    (7, 24, 48),    # 7 frames, downsampled
+                ]
+
+                dims_found = False
+                for nf, h, w in possible_configs:
+                    if nf * h * w == seq_len:
+                        self.num_frames = nf
+                        self.height = h
+                        self.width = w
+                        if not self._dims_inferred:
+                            # print(f"Auto-inferred RoPE dimensions: {nf}f x {h}h x {w}w (seq_len={seq_len})")
+                            self._dims_inferred = True
+                        dims_found = True
+                        break
+
+                # If still not found, try to factor seq_len automatically
+                if not dims_found:
+                    # Try common spatial dimensions with varying frame counts
+                    common_spatial = [(32, 32), (64, 96), (96, 64), (84, 96), (126, 64), (24, 48)]
+                    for h, w in common_spatial:
+                        if seq_len % (h * w) == 0:
+                            nf = seq_len // (h * w)
+                            self.num_frames = nf
+                            self.height = h
+                            self.width = w
+                            print(f"Auto-factored RoPE dimensions: {nf}f x {h}h x {w}w (seq_len={seq_len})")
+                            dims_found = True
+                            break
+
+                if not dims_found:
+                    raise ValueError(
+                        f"Cannot infer video dimensions from seq_len={seq_len}. "
+                        f"Please provide num_frames, height, width explicitly to patch_ltx_pipeline(). "
+                        f"These should be LATENT dimensions (typically 8x compressed from pixel dimensions)."
+                    )
+
             query, key = rope_3d(
                 query, key,
                 num_frames=self.num_frames,
@@ -97,10 +162,37 @@ class OptimizedLTXVideoAttnProcessor:
         key = key.transpose(1, 2)
         value = value.transpose(1, 2)
 
+        # Prepare attention mask for scaled_dot_product_attention
+        # The mask from diffusers may not be in the right format, so we need to handle it carefully
+        prepared_mask = None
+        if attention_mask is not None:
+            # scaled_dot_product_attention expects mask shape: [batch, heads, query_seq, key_seq]
+            # or broadcastable to that shape
+            expected_mask_shape = (query.shape[0], query.shape[1], query.shape[2], key.shape[2])
+
+            # Check if the mask can broadcast to the expected shape
+            try:
+                # Try to reshape/broadcast the mask
+                if attention_mask.ndim == 2:
+                    # [batch, seq] -> [batch, 1, 1, seq]
+                    prepared_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+                elif attention_mask.ndim == 3:
+                    # [batch, query_seq, key_seq] -> [batch, 1, query_seq, key_seq]
+                    prepared_mask = attention_mask.unsqueeze(1)
+                elif attention_mask.ndim == 4:
+                    # Already in the right format
+                    prepared_mask = attention_mask
+                else:
+                    # Unexpected shape, skip mask
+                    prepared_mask = None
+            except:
+                # If any error occurs, just skip the mask
+                prepared_mask = None
+
         # Compute attention (uses Flash Attention if available via PyTorch 2.0+)
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query, key, value,
-            attn_mask=attention_mask,
+            attn_mask=prepared_mask,
             dropout_p=0.0,
             is_causal=False,
         )
@@ -267,15 +359,44 @@ class OptimizedLTXVideoTransformerBlock(torch.nn.Module):
         return hidden_states
 
 
-def patch_ltx_pipeline(pipe, num_frames: int, height: int, width: int):
+def patch_ltx_pipeline(
+    pipe,
+    num_frames: Optional[int] = None,
+    height: Optional[int] = None,
+    width: Optional[int] = None,
+):
     """
     Patch an LTX-Video pipeline to use optimized kernels.
 
     Args:
         pipe: LTXPipeline from diffusers
-        num_frames: Number of video frames
-        height: Height in patches
-        width: Width in patches
+        num_frames: Number of frames in LATENT space (not pixel space).
+                   If None, will be auto-inferred on first forward pass.
+        height: Height in LATENT space (not pixels).
+               If None, will be auto-inferred on first forward pass.
+               For pixel height, divide by VAE spatial compression (typically 8).
+        width: Width in LATENT space (not pixels).
+              If None, will be auto-inferred on first forward pass.
+              For pixel width, divide by VAE spatial compression (typically 8).
+
+    Example:
+        # Option 1: Let it auto-infer (recommended)
+        pipe = patch_ltx_pipeline(pipe)
+
+        # Option 2: Specify latent dimensions explicitly
+        pipe = patch_ltx_pipeline(
+            pipe,
+            num_frames=161,     # No temporal compression in LTX-Video
+            height=512 // 8,    # 64 (8x spatial compression)
+            width=768 // 8,     # 96 (8x spatial compression)
+        )
+
+    Note:
+        LTX-Video's VAE uses 8x spatial compression and 1x temporal compression.
+        So for a 161-frame, 512x768 pixel video:
+        - Latent frames: 161
+        - Latent height: 512 / 8 = 64
+        - Latent width: 768 / 8 = 96
     """
     # Create optimized attention processor
     attn_processor = OptimizedLTXVideoAttnProcessor(
@@ -292,7 +413,10 @@ def patch_ltx_pipeline(pipe, num_frames: int, height: int, width: int):
     pipe.transformer.set_attn_processor(attn_processors)
 
     print(f"Patched LTX-Video pipeline with optimized kernels")
-    print(f"  - 3D RoPE for {num_frames}×{height}×{width} video")
+    if num_frames and height and width:
+        print(f"  - 3D RoPE for {num_frames}×{height}×{width} latent video")
+    else:
+        print(f"  - 3D RoPE with auto-inferred dimensions")
     print(f"  - Custom RMSNorm with warp reductions")
     print(f"  - GEGLU with tanh approximation")
 
