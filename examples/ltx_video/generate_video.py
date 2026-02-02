@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Generate a video of a dog using LTX-Video with custom H100 CUDA kernels.
+Benchmarking script for LTX-Video with/without custom H100 CUDA kernels.
 
-This script REQUIRES the custom CUDA kernels to be built first.
-The kernels are injected into the diffusers pipeline for optimized inference.
+Measures memory usage and latency for video generation with configurable kernel usage.
 
 Requirements:
     pip install diffusers transformers accelerate torch
 
-Build kernels first:
+Build kernels (optional, for --use-optimized-kernels):
     # Using Nix (recommended)
     nix flake update && nix run .#build-and-copy -L
 
@@ -16,9 +15,14 @@ Build kernels first:
     uv pip install -e .
 
 Usage:
-    python generate_video.py
-    python generate_video.py --prompt "A golden retriever running on the beach"
-    python generate_video.py --num-frames 49 --height 480 --width 704
+    # Benchmark with optimized kernels
+    python generate_video.py --use-optimized-kernels
+
+    # Benchmark without optimized kernels (baseline)
+    python generate_video.py --no-optimized-kernels
+
+    # Compare both
+    python generate_video.py --use-optimized-kernels && python generate_video.py --no-optimized-kernels
 """
 
 import argparse
@@ -33,24 +37,15 @@ import torch.nn as nn
 # Add kernel module to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'torch-ext'))
 
-# Import custom kernels - REQUIRED (no fallback)
+# Import custom kernels - OPTIONAL (for benchmarking comparison)
+KERNELS_AVAILABLE = False
+rmsnorm = None
 try:
     from ltx_kernels import rmsnorm
     # Note: LTX-Video uses GELU (not GEGLU), so we only need rmsnorm
     KERNELS_AVAILABLE = True
-    print("Custom CUDA kernels loaded successfully!")
-except ImportError as e:
-    print("=" * 60)
-    print("ERROR: Custom CUDA kernels not found!")
-    print("=" * 60)
-    print(f"\nImport error: {e}")
-    print("\nPlease build the kernels first:")
-    print("  # Using Nix (recommended)")
-    print("  nix flake update && nix run .#build-and-copy -L")
-    print("\n  # Or using pip/uv")
-    print("  uv pip install -e .")
-    print("=" * 60)
-    sys.exit(1)
+except ImportError:
+    pass  # Will use baseline implementation when --no-optimized-kernels
 
 from diffusers import LTXPipeline
 from diffusers.utils import export_to_video
@@ -250,9 +245,11 @@ def generate_dog_video(
     guidance_scale: float = 7.5,
     seed: int = 42,
     output_path: str = "dog_video.mp4",
+    use_optimized_kernels: bool = True,
+    num_warmup_iterations: int = 2,
 ):
     """
-    Generate a video of a dog using LTX-Video with custom H100 CUDA kernels.
+    Generate a video using LTX-Video with optional custom H100 CUDA kernels.
 
     Args:
         prompt: Text description of the video to generate
@@ -263,10 +260,12 @@ def generate_dog_video(
         num_inference_steps: Denoising steps (more = higher quality, slower)
         guidance_scale: Classifier-free guidance strength
         seed: Random seed for reproducibility
-        output_path: Where to save the video
+        output_path: Where to save the video (will be modified with kernel suffix)
+        use_optimized_kernels: Whether to use custom CUDA kernels
+        num_warmup_iterations: Number of warmup runs before benchmark
     """
     print("=" * 60)
-    print("LTX-Video Generation with Custom H100 CUDA Kernels")
+    print("LTX-Video Benchmarking Script")
     print("=" * 60)
 
     device = "cuda"
@@ -274,32 +273,46 @@ def generate_dog_video(
 
     print(f"\nDevice: {torch.cuda.get_device_name(0)}")
     print(f"Dtype: {dtype}")
-    print("Custom kernels: Enabled")
+
+    # Check kernel availability and configuration
+    if use_optimized_kernels:
+        if not KERNELS_AVAILABLE:
+            print("\nERROR: Optimized kernels requested but not available!")
+            print("Please build the kernels first or use --no-optimized-kernels")
+            sys.exit(1)
+        print("Custom kernels: ENABLED")
+    else:
+        print("Custom kernels: DISABLED (baseline)")
+
+    # Modify output path to include kernel suffix
+    base_path = output_path.rsplit('.', 1)
+    if len(base_path) == 2:
+        kernel_suffix = "_optimized" if use_optimized_kernels else "_baseline"
+        output_path = f"{base_path[0]}{kernel_suffix}.{base_path[1]}"
+    else:
+        kernel_suffix = "_optimized" if use_optimized_kernels else "_baseline"
+        output_path = f"{output_path}{kernel_suffix}"
+
+    print(f"Output will be saved to: {output_path}")
 
     # Load the pipeline
     print("\nLoading LTX-Video pipeline...")
     start_time = time.time()
-
-    pipe = LTXPipeline.from_pretrained(
-        "Lightricks/LTX-Video",
-        torch_dtype=dtype,
-    )
-    pipe.to(device)
-
+    pipe = LTXPipeline.from_pretrained("Lightricks/LTX-Video", torch_dtype=dtype).to(device)
     load_time = time.time() - start_time
     print(f"Model loaded in {load_time:.1f}s")
 
-    # Inject optimized CUDA kernels into the pipeline
-    print("\nInjecting optimized CUDA kernels...")
-    injection_stats = inject_optimized_kernels(pipe)
-    print(f"  Attention processors replaced: {injection_stats['attention_processors']}")
-    print(f"  RMSNorm modules patched: {injection_stats['rmsnorm_modules']}")
+    # Inject optimized CUDA kernels into the pipeline (if requested)
+    if use_optimized_kernels:
+        print("\nInjecting optimized CUDA kernels...")
+        injection_stats = inject_optimized_kernels(pipe)
+        print(f"  Attention processors replaced: {injection_stats['attention_processors']}")
+        print(f"  RMSNorm modules patched: {injection_stats['rmsnorm_modules']}")
 
-    # Benchmark custom kernels
-    benchmark_custom_kernels(device=device, dtype=dtype)
-
-    # Enable memory optimizations
-    pipe.enable_model_cpu_offload()
+        # Benchmark custom kernels
+        benchmark_custom_kernels(device=device, dtype=dtype)
+    else:
+        print("\nUsing baseline (non-optimized) implementation")
 
     # Video generation parameters
     print("\nGeneration settings:")
@@ -309,93 +322,147 @@ def generate_dog_video(
     print(f"  Steps: {num_inference_steps}")
     print(f"  Guidance scale: {guidance_scale}")
     print(f"  Seed: {seed}")
+    print(f"  Warmup iterations: {num_warmup_iterations}")
 
-    # Generate video
-    print("\nGenerating video...")
+    # Warmup iterations to reduce variance
+    if num_warmup_iterations > 0:
+        print(f"\nRunning {num_warmup_iterations} warmup iteration(s)...")
+        for i in range(num_warmup_iterations):
+            print(f"  Warmup iteration {i+1}/{num_warmup_iterations}...")
+            _ = pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                num_frames=num_frames,
+                height=height,
+                width=width,
+                num_inference_steps=min(num_inference_steps, 5),
+                guidance_scale=guidance_scale,
+            )
+            torch.cuda.synchronize()
+        print("  Warmup complete!")
+
+    # Generate video (timed benchmark run)
+    print("\nGenerating video (benchmark run)...")
+    torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
+    memory_before = torch.cuda.memory_allocated() / 1e9
+
     start_time = time.time()
-
-    generator = torch.Generator(device=device).manual_seed(seed)
-
-    with torch.inference_mode():
-        output = pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            num_frames=num_frames,
-            height=height,
-            width=width,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            generator=generator,
-        )
-
+    output = pipe(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        num_frames=num_frames,
+        height=height,
+        width=width,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        generator=torch.Generator(device=device).manual_seed(seed),
+    )
+    torch.cuda.synchronize()
     gen_time = time.time() - start_time
     peak_memory = torch.cuda.max_memory_allocated() / 1e9
+    memory_after = torch.cuda.memory_allocated() / 1e9
 
-    print("\nGeneration complete!")
-    print(f"  Time: {gen_time:.1f}s ({gen_time/num_frames:.2f}s per frame)")
-    print(f"  Peak memory: {peak_memory:.2f} GB")
+    # Benchmark results
+    print("\n" + "=" * 60)
+    print("BENCHMARK RESULTS")
+    print("=" * 60)
+    print(f"Configuration: {'OPTIMIZED KERNELS' if use_optimized_kernels else 'BASELINE (NO KERNELS)'}")
+    print(f"\nLatency:")
+    print(f"  Total generation time: {gen_time:.2f}s")
+    print(f"  Time per frame: {gen_time/num_frames:.3f}s")
+    print(f"  Time per step: {gen_time/num_inference_steps:.3f}s")
+    print(f"\nMemory:")
+    print(f"  Peak memory allocated: {peak_memory:.2f} GB")
+    print(f"  Memory before generation: {memory_before:.2f} GB")
+    print(f"  Memory after generation: {memory_after:.2f} GB")
+    print("=" * 60)
 
     # Save video
+    print(f"\nSaving video to: {output_path}")
     export_to_video(output.frames[0], output_path, fps=24)
-    print(f"\nVideo saved to: {output_path}")
+    print(f"Video saved successfully")
 
     # Also save as GIF for easy viewing
     gif_path = output_path.replace('.mp4', '.gif')
     export_to_video(output.frames[0], gif_path, fps=12)
     print(f"GIF saved to: {gif_path}")
 
-    print("\n" + "=" * 60)
-    print("Done!")
-
-    return output_path
+    return {
+        'output_path': output_path,
+        'generation_time': gen_time,
+        'peak_memory_gb': peak_memory,
+        'time_per_frame': gen_time/num_frames,
+        'time_per_step': gen_time/num_inference_steps,
+        'use_optimized_kernels': use_optimized_kernels,
+    }
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate videos using LTX-Video with custom H100 kernels"
+        description="Benchmark LTX-Video with/without custom H100 kernels"
     )
+
+    # Kernel configuration
+    kernel_group = parser.add_mutually_exclusive_group()
+    kernel_group.add_argument(
+        "--use-optimized-kernels",
+        action="store_true",
+        default=False,
+        help="Use custom H100 CUDA kernels (requires building kernels first)"
+    )
+    kernel_group.add_argument(
+        "--no-optimized-kernels",
+        action="store_true",
+        default=False,
+        help="Use baseline implementation without custom kernels"
+    )
+
+    # Generation parameters
     parser.add_argument(
         "--prompt",
         type=str,
-        default="A happy golden retriever dog running through a sunny park, wagging its tail, cinematic lighting, 4K quality",
+        default="""A woman with long brown hair and light skin smiles at another woman with long blonde hair.
+The woman with brown hair wears a black jacket and has a small, barely noticeable mole on her right cheek.
+The camera angle is a close-up, focused on the woman with brown hair's face. The lighting is warm and
+natural, likely from the setting sun, casting a soft glow on the scene. The scene appears to be real-life footage""",
         help="Text prompt describing the video to generate"
     )
     parser.add_argument(
         "--negative-prompt",
         type=str,
-        default="blurry, low quality, distorted, watermark, text",
+        default="worst quality, inconsistent motion, blurry, jittery, distorted",
         help="Things to avoid in generation"
     )
     parser.add_argument(
         "--num-frames",
         type=int,
-        default=25,
-        help="Number of frames to generate (default: 25, ~1 second at 24fps)"
+        default=161,
+        help="Number of frames to generate (default: 161)"
     )
     parser.add_argument(
         "--height",
         type=int,
-        default=480,
-        help="Video height in pixels (default: 480)"
+        default=512,
+        help="Video height in pixels (default: 512)"
     )
     parser.add_argument(
         "--width",
         type=int,
-        default=704,
-        help="Video width in pixels (default: 704)"
+        default=768,
+        help="Video width in pixels (default: 768)"
     )
     parser.add_argument(
         "--steps",
         type=int,
-        default=30,
-        help="Number of denoising steps (default: 30)"
+        default=50,
+        help="Number of denoising steps (default: 50)"
     )
     parser.add_argument(
         "--guidance-scale",
         type=float,
-        default=7.5,
-        help="Classifier-free guidance scale (default: 7.5)"
+        default=4.5,
+        help="Classifier-free guidance scale (default: 4.5)"
     )
     parser.add_argument(
         "--seed",
@@ -407,12 +474,27 @@ def main():
         "--output",
         type=str,
         default="dog_video.mp4",
-        help="Output video path (default: dog_video.mp4)"
+        help="Output video path (default: dog_video.mp4, will add _optimized or _baseline suffix)"
+    )
+    parser.add_argument(
+        "--warmup-iterations",
+        type=int,
+        default=2,
+        help="Number of warmup iterations before benchmark run (default: 1)"
     )
 
     args = parser.parse_args()
 
-    generate_dog_video(
+    # Determine kernel usage (default to optimized if available, else baseline)
+    if args.no_optimized_kernels:
+        use_kernels = False
+    elif args.use_optimized_kernels:
+        use_kernels = True
+    else:
+        # Default behavior: use kernels if available
+        use_kernels = KERNELS_AVAILABLE
+
+    results = generate_dog_video(
         prompt=args.prompt,
         negative_prompt=args.negative_prompt,
         num_frames=args.num_frames,
@@ -422,7 +504,12 @@ def main():
         guidance_scale=args.guidance_scale,
         seed=args.seed,
         output_path=args.output,
+        use_optimized_kernels=use_kernels,
+        num_warmup_iterations=args.warmup_iterations,
     )
+
+    print(f"\nBenchmark completed successfully!")
+    print(f"Results: {results}")
 
 
 if __name__ == "__main__":
