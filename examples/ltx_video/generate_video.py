@@ -247,6 +247,8 @@ def generate_dog_video(
     output_path: str = "dog_video.mp4",
     use_optimized_kernels: bool = True,
     num_warmup_iterations: int = 2,
+    use_compile: bool = False,
+    batch_size: int = 1,
 ):
     """
     Generate a video using LTX-Video with optional custom H100 CUDA kernels.
@@ -263,6 +265,8 @@ def generate_dog_video(
         output_path: Where to save the video (will be modified with kernel suffix)
         use_optimized_kernels: Whether to use custom CUDA kernels
         num_warmup_iterations: Number of warmup runs before benchmark
+        use_compile: Whether to use torch.compile on transformer blocks
+        batch_size: Number of videos to generate per prompt
     """
     print("=" * 60)
     print("LTX-Video Benchmarking Script")
@@ -284,14 +288,16 @@ def generate_dog_video(
     else:
         print("Custom kernels: DISABLED (baseline)")
 
-    # Modify output path to include kernel suffix
+    # Modify output path to include kernel and compile suffix
     base_path = output_path.rsplit('.', 1)
+    kernel_suffix = "_optimized" if use_optimized_kernels else "_baseline"
+    compile_suffix = "_compile" if use_compile else ""
+    full_suffix = f"{kernel_suffix}{compile_suffix}"
+
     if len(base_path) == 2:
-        kernel_suffix = "_optimized" if use_optimized_kernels else "_baseline"
-        output_path = f"{base_path[0]}{kernel_suffix}.{base_path[1]}"
+        output_path = f"{base_path[0]}{full_suffix}.{base_path[1]}"
     else:
-        kernel_suffix = "_optimized" if use_optimized_kernels else "_baseline"
-        output_path = f"{output_path}{kernel_suffix}"
+        output_path = f"{output_path}{full_suffix}"
 
     print(f"Output will be saved to: {output_path}")
 
@@ -314,6 +320,12 @@ def generate_dog_video(
     else:
         print("\nUsing baseline (non-optimized) implementation")
 
+    # Compile transformer blocks (if requested)
+    if use_compile:
+        print("\nCompiling transformer blocks with torch.compile...")
+        pipe.transformer.compile_repeated_blocks(fullgraph=True)
+        print("  Compilation enabled (fullgraph=True)")
+
     # Video generation parameters
     print("\nGeneration settings:")
     print(f"  Prompt: {prompt}")
@@ -322,6 +334,7 @@ def generate_dog_video(
     print(f"  Steps: {num_inference_steps}")
     print(f"  Guidance scale: {guidance_scale}")
     print(f"  Seed: {seed}")
+    print(f"  Batch size: {batch_size}")
     print(f"  Warmup iterations: {num_warmup_iterations}")
 
     # Warmup iterations to reduce variance
@@ -337,6 +350,7 @@ def generate_dog_video(
                 width=width,
                 num_inference_steps=min(num_inference_steps, 5),
                 guidance_scale=guidance_scale,
+                num_videos_per_prompt=batch_size,
             )
             torch.cuda.synchronize()
         print("  Warmup complete!")
@@ -356,6 +370,7 @@ def generate_dog_video(
         width=width,
         num_inference_steps=num_inference_steps,
         guidance_scale=guidance_scale,
+        num_videos_per_prompt=batch_size,
         generator=torch.Generator(device=device).manual_seed(seed),
     )
     torch.cuda.synchronize()
@@ -378,15 +393,32 @@ def generate_dog_video(
     print(f"  Memory after generation: {memory_after:.2f} GB")
     print("=" * 60)
 
-    # Save video
-    print(f"\nSaving video to: {output_path}")
-    export_to_video(output.frames[0], output_path, fps=24)
-    print(f"Video saved successfully")
+    # Save video(s)
+    print(f"\nSaving video(s)...")
+    if batch_size == 1:
+        # Single video - save with the original output path
+        export_to_video(output.frames[0], output_path, fps=24)
+        print(f"  Video saved to: {output_path}")
 
-    # Also save as GIF for easy viewing
-    gif_path = output_path.replace('.mp4', '.gif')
-    export_to_video(output.frames[0], gif_path, fps=12)
-    print(f"GIF saved to: {gif_path}")
+        # Also save as GIF for easy viewing
+        gif_path = output_path.replace('.mp4', '.gif')
+        export_to_video(output.frames[0], gif_path, fps=12)
+        print(f"  GIF saved to: {gif_path}")
+    else:
+        # Multiple videos - save each with index
+        base_path = output_path.rsplit('.', 1)
+        for i, frames in enumerate(output.frames):
+            if len(base_path) == 2:
+                video_path = f"{base_path[0]}_{i}.{base_path[1]}"
+                gif_path = f"{base_path[0]}_{i}.gif"
+            else:
+                video_path = f"{output_path}_{i}"
+                gif_path = f"{output_path}_{i}.gif"
+
+            export_to_video(frames, video_path, fps=24)
+            export_to_video(frames, gif_path, fps=12)
+            print(f"  Video {i+1}/{batch_size} saved to: {video_path}")
+    print("All videos saved successfully")
 
     return {
         'output_path': output_path,
@@ -395,6 +427,8 @@ def generate_dog_video(
         'time_per_frame': gen_time/num_frames,
         'time_per_step': gen_time/num_inference_steps,
         'use_optimized_kernels': use_optimized_kernels,
+        'use_compile': use_compile,
+        'batch_size': batch_size,
     }
 
 
@@ -482,6 +516,18 @@ natural, likely from the setting sun, casting a soft glow on the scene. The scen
         default=2,
         help="Number of warmup iterations before benchmark run (default: 1)"
     )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        default=False,
+        help="Use torch.compile on transformer blocks (fullgraph=True)"
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Number of videos to generate per prompt (default: 1)"
+    )
 
     args = parser.parse_args()
 
@@ -506,6 +552,8 @@ natural, likely from the setting sun, casting a soft glow on the scene. The scen
         output_path=args.output,
         use_optimized_kernels=use_kernels,
         num_warmup_iterations=args.warmup_iterations,
+        use_compile=args.compile,
+        batch_size=args.batch_size,
     )
 
     print(f"\nBenchmark completed successfully!")
