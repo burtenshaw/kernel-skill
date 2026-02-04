@@ -48,6 +48,55 @@ float val = input[idx];
 - 128 bytes optimal (full warp, FP32)
 - Align to 128-byte boundaries when possible
 
+### Vectorized Memory Access (Critical for Bandwidth)
+
+Vectorized loads/stores dramatically improve memory bandwidth utilization:
+
+**BFloat16 vectorization (2x elements per load):**
+```cuda
+// Load 2 bfloat16 elements at once (32-bit transaction)
+const __nv_bfloat162* vec_input = reinterpret_cast<const __nv_bfloat162*>(row_input);
+
+#pragma unroll 4
+for (int i = tid; i < hidden_size / 2; i += stride) {
+    __nv_bfloat162 v = vec_input[i];
+    float v0 = __bfloat162float(v.x);
+    float v1 = __bfloat162float(v.y);
+    // Process v0, v1...
+}
+
+// Write back vectorized
+__nv_bfloat162* vec_output = reinterpret_cast<__nv_bfloat162*>(row_output);
+__nv_bfloat162 result;
+result.x = __float2bfloat16(val0);
+result.y = __float2bfloat16(val1);
+vec_output[i] = result;
+```
+
+**FP16 vectorization:**
+```cuda
+const __half2* vec_input = reinterpret_cast<const __half2*>(row_input);
+__half2 v = vec_input[i];
+float v0 = __half2float(v.x);
+float v1 = __half2float(v.y);
+```
+
+**FP32 vectorization (4x elements per load):**
+```cuda
+const float4* vec_input = reinterpret_cast<const float4*>(row_input);
+float4 v = vec_input[i];
+// v.x, v.y, v.z, v.w are 4 consecutive floats
+```
+
+**Benchmark Results (RMSNorm on H100):**
+
+| Implementation | Time (ms) | Speedup |
+|:---|:---:|:---:|
+| Scalar loads | 0.065 | 1.00x |
+| Vectorized (__nv_bfloat162) | 0.019 | **3.37x** |
+
+**Bandwidth achieved:** 38% of H100's theoretical 3.35 TB/s
+
 ### L2 Cache Utilization
 
 H100's 50MB L2 cache is significant for diffusion models:

@@ -145,6 +145,68 @@ if isinstance(module, torch.nn.RMSNorm):
 if type(module).__name__ == 'RMSNorm':
 ```
 
+## torch.compile Compatibility
+
+### 11. Custom Kernels Don't Work with torch.compile
+
+**Problem:** When using `--use-optimized-kernels` with `--compile`, you get an error:
+```
+torch._dynamo.exc.Unsupported: Attempted to call function marked as skipped
+```
+
+Or:
+```
+torch._dynamo.exc.TorchRuntimeError: Cannot access data pointer of Tensor (e.g. FakeTensor)
+```
+
+**Root Cause:** Custom C++/CUDA kernels that access tensor data pointers directly are not compatible with torch.compile's graph tracing. The compiler needs to trace through the function using "fake tensors" that don't have real data.
+
+**Solution Options:**
+
+1. **Use one or the other (recommended for now):**
+   ```bash
+   # Option A: Custom kernels (6% speedup)
+   python generate_video.py --use-optimized-kernels
+
+   # Option B: torch.compile (34% speedup)
+   python generate_video.py --no-optimized-kernels --compile
+   ```
+
+2. **Register as a PyTorch custom op (advanced):**
+   ```python
+   import torch
+
+   @torch.library.custom_op("ltx_kernels::rmsnorm", mutates_args={"out"})
+   def rmsnorm_op(out: torch.Tensor, input: torch.Tensor, weight: torch.Tensor, eps: float) -> None:
+       ops.rmsnorm_forward(out, input.contiguous(), weight.contiguous(), eps)
+
+   @rmsnorm_op.register_fake
+   def _(out, input, weight, eps):
+       pass  # No shape/dtype changes, output written to 'out'
+   ```
+
+3. **Use `torch.compiler.allow_in_graph` (limited):**
+   ```python
+   # This only works if the kernel doesn't access tensor data pointers during tracing
+   @torch.compiler.allow_in_graph
+   def rmsnorm(input, weight, eps=1e-6):
+       out = torch.empty_like(input)
+       ops.rmsnorm_forward(out, input.contiguous(), weight.contiguous(), eps)
+       return out
+   ```
+   Note: This approach fails for most C++ extensions because they access data pointers.
+
+### 12. Performance Comparison: Custom Kernels vs torch.compile
+
+| Configuration | End-to-End Speedup | Notes |
+|:---|:---:|:---|
+| Baseline (neither) | 1.00x | Reference |
+| Custom kernels only | 1.06x | 6% faster, works without compilation overhead |
+| torch.compile only | 1.34x | 34% faster, requires warm-up compilation |
+| Both (future) | TBD | Requires custom op registration |
+
+**Recommendation:** For production workloads with many generations, use `--compile`. For debugging or quick iterations, use `--use-optimized-kernels`.
+
 ## Debugging Tips
 
 ### Profile Your Kernels

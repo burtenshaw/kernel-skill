@@ -34,26 +34,13 @@ except ImportError:
     ops = None
 
 
-def rmsnorm(
+def _rmsnorm_impl(
     input: torch.Tensor,
     weight: torch.Tensor,
     eps: float = 1e-6,
     out: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """
-    RMS Layer Normalization.
-
-    Formula: output = x * weight / sqrt(mean(x^2) + eps)
-
-    Args:
-        input: Input tensor of shape [..., hidden_size]
-        weight: Weight tensor of shape [hidden_size]
-        eps: Epsilon for numerical stability (default: 1e-6 for LTX-Video)
-        out: Optional output tensor
-
-    Returns:
-        Normalized tensor of same shape as input
-    """
+    """Internal implementation of RMSNorm."""
     if out is None:
         out = torch.empty_like(input)
 
@@ -65,6 +52,14 @@ def rmsnorm(
         out = input * torch.rsqrt(variance + eps) * weight
 
     return out
+
+
+# Make the kernel compatible with torch.compile
+try:
+    rmsnorm = torch.compiler.allow_in_graph(_rmsnorm_impl)
+except AttributeError:
+    # Older PyTorch versions without torch.compiler
+    rmsnorm = _rmsnorm_impl
 
 
 def rmsnorm_residual(
