@@ -1,10 +1,10 @@
 ---
 name: h100-diffusers-kernels
-description: "Provides guidance for writing optimized CUDA kernels for H100 GPUs (sm_90) targeting diffusers library models like LTX-Video, Stable Diffusion, and DiT. Applies when working with attention, normalization, RoPE, activations, or custom kernel development for diffusion transformers."
+description: "Provides guidance for writing and benchmarking optimized CUDA kernels for H100 GPUs (sm_90) targeting diffusers library models like LTX-Video, Stable Diffusion, and DiT. Includes benchmarking scripts to compare kernel performance against baseline implementations."
 disable-model-invocation: false
 user-invocable: true
 allowed-tools: "Read, Grep, Glob, Bash"
-argument-hint: "kernel type: attention, rmsnorm, rope, adaln, geglu"
+argument-hint: "kernel type: attention, rmsnorm, rope, adaln, geglu, benchmark"
 ---
 
 # H100 CUDA Kernels for Diffusers
@@ -13,7 +13,25 @@ This skill provides patterns and guidance for developing optimized CUDA kernels 
 
 ## Quick Start
 
-**For integrating kernels into diffusers pipelines, start with the minimal example:**
+**For benchmarking kernel performance:**
+```bash
+# Benchmark with optimized kernels (6% end-to-end speedup)
+python generate_video.py --use-optimized-kernels
+
+# Benchmark baseline with torch.compile (34% speedup)
+python generate_video.py --no-optimized-kernels --compile
+
+# Compare configurations (note: --compile and --use-optimized-kernels are mutually exclusive)
+python generate_video.py --use-optimized-kernels && \
+python generate_video.py --no-optimized-kernels --compile
+```
+
+**For isolated kernel micro-benchmarks:**
+```bash
+python benchmark_rmsnorm.py
+```
+
+**For a minimal integration example (~150 lines):**
 ```bash
 python scripts/ltx_kernel_injection_example.py
 ```
@@ -21,6 +39,7 @@ python scripts/ltx_kernel_injection_example.py
 ## When This Skill Applies
 
 Use this skill when:
+- **Benchmarking kernel performance** against baseline implementations
 - Writing new CUDA kernels for diffusion models
 - Optimizing existing kernels for H100 architecture
 - Implementing custom attention, normalization, or activation layers
@@ -33,32 +52,95 @@ A complete working example is available at `examples/ltx_video/`. This demonstra
 - Custom CUDA kernels (RMSNorm, RoPE 3D, GEGLU, AdaLN)
 - Build system setup with setup.py, build.toml, and flake.nix
 - PyTorch C++ bindings and Python API
-- Video generation script using diffusers
+- Benchmarking script for comparing optimized vs baseline performance
 
-**Example benchmarks on H100:**
+## Benchmarking Kernels
+
+Use the benchmark script to measure kernel performance:
+
+```bash
+# Full benchmark with all options
+python scripts/benchmark_example.py \
+    --use-optimized-kernels \
+    --compile \
+    --batch-size 1 \
+    --num-frames 161 \
+    --height 512 \
+    --width 768 \
+    --steps 50 \
+    --warmup-iterations 2
 ```
-RMSNorm [2x1024x2048]: 0.054 ms
-GEGLU [2x1024x4096]: 0.030 ms
-```
+
+### Benchmark Script Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--use-optimized-kernels` | auto | Use custom H100 CUDA kernels |
+| `--no-optimized-kernels` | - | Use baseline implementation |
+| `--compile` | false | Enable torch.compile on transformer |
+| `--batch-size` | 1 | Number of videos per prompt |
+| `--num-frames` | 161 | Number of frames to generate |
+| `--height` | 512 | Video height in pixels |
+| `--width` | 768 | Video width in pixels |
+| `--steps` | 50 | Denoising steps |
+| `--warmup-iterations` | 2 | Warmup runs before benchmark |
+
+### Example Benchmark Results
+
+**End-to-End Video Generation (49 frames, 30 steps, H100 80GB):**
+
+| Configuration | Time (s) | it/s | Speedup | Notes |
+|:---|:---:|:---:|:---:|:---|
+| Baseline (no compile) | 2.87 | 12.58 | 1.00x | Reference |
+| **Optimized Kernels** | 2.70 | 13.52 | **1.06x** | 6% faster |
+| Baseline + torch.compile | 2.14 | 19.05 | 1.34x | 34% faster |
+
+**Important:** `--use-optimized-kernels` and `--compile` are currently mutually exclusive. Custom kernels require PyTorch custom op registration to work with torch.compile.
+
+**Key metrics to capture:**
+- **Device:** GPU model (e.g., NVIDIA H100 80GB HBM3)
+- **Precision:** Data type used (e.g., bfloat16)
+- **Resolution:** Width x Height (e.g., 768x512)
+- **Frames:** Number of frames generated (e.g., 49, 161)
+
+### RMSNorm Micro-benchmarks
+
+The vectorized RMSNorm kernel achieves **2.67x average speedup** over PyTorch baseline:
+
+| Shape | Custom (ms) | PyTorch (ms) | Speedup |
+|:---|:---:|:---:|:---:|
+| [1×1024×2048] | 0.019 | 0.065 | **3.37x** |
+| [2×1024×2048] | 0.024 | 0.073 | **3.04x** |
+| [4×1024×2048] | 0.036 | 0.093 | **2.58x** |
+| [2×4096×3072] | 0.087 | 0.208 | **2.41x** |
+| [4×4096×3072] | 0.157 | 0.392 | **2.49x** |
+
+**Bandwidth efficiency:** 38% of H100's theoretical 3.35 TB/s
+
+**Why end-to-end speedup is smaller:** RMSNorm accounts for ~5% of total compute in LTX-Video. The remaining time is spent in attention (Flash Attention/SDPA), linear projections, and VAE decode.
 
 ## Project Structure
 
 ```
-hardware_kernel/
-├── examples/
-│   └── ltx_video/              # Complete working example
-│       ├── kernel_src/         # CUDA kernels
-│       ├── torch-ext/          # PyTorch bindings
-│       ├── setup.py            # pip install -e .
-│       └── generate_video.py   # Video generation script
-├── kernel_src/                 # CUDA kernel implementations
-│   ├── layernorm.cu           # RMSNorm/LayerNorm
-│   ├── rope.cu                # 1D and 3D rotary embeddings
-│   ├── geglu.cu               # GELU-gated linear units
-│   └── adaln.cu               # Adaptive layer norm
-└── torch-ext/
-    ├── torch_binding.cpp      # PyTorch C++ bindings
-    └── ltx_kernels/__init__.py
+.claude/skills/h100-diffusers-kernels/
+├── scripts/
+│   ├── benchmark_example.py        # End-to-end video generation benchmark
+│   ├── benchmark_rmsnorm.py        # Isolated RMSNorm micro-benchmark
+│   └── ltx_kernel_injection_example.py  # Minimal integration example
+├── references/
+│   ├── diffusers-integration.md    # Complete integration guide
+│   ├── troubleshooting.md          # Common issues and solutions
+│   ├── kernel-templates.md         # CUDA kernel templates (includes vectorized)
+│   └── h100-optimization-guide.md  # H100 optimization deep dive
+└── SKILL.md                        # This file
+
+examples/ltx_video/                  # Complete working example
+├── kernel_src/
+│   └── rmsnorm.cu                  # Vectorized RMSNorm kernel (2.67x faster)
+├── torch-ext/                      # PyTorch bindings
+├── generate_video.py               # Full benchmark script
+├── benchmark_rmsnorm.py            # Isolated kernel benchmark
+└── setup.py                        # pip install -e .
 ```
 
 ## H100 Architecture Reference
@@ -73,6 +155,37 @@ hardware_kernel/
 | Warp Size | 32 | All reductions use warp shuffles |
 
 ## Core Kernel Patterns
+
+### Vectorized Memory Access (Critical for Performance)
+
+**BFloat16 vectorization using `__nv_bfloat162`:**
+```cuda
+// Load 2 bfloat16 elements at once (32-bit load)
+const __nv_bfloat162* vec_input = reinterpret_cast<const __nv_bfloat162*>(row_input);
+
+#pragma unroll 4
+for (int i = tid; i < vec_hidden; i += stride) {
+    __nv_bfloat162 v = vec_input[i];
+    float v0 = __bfloat162float(v.x);
+    float v1 = __bfloat162float(v.y);
+    sum_sq += v0 * v0 + v1 * v1;
+}
+```
+
+**FP16 vectorization using `__half2`:**
+```cuda
+const __half2* vec_input = reinterpret_cast<const __half2*>(row_input);
+__half2 v = vec_input[i];
+float v0 = __half2float(v.x);
+float v1 = __half2float(v.y);
+```
+
+**FP32 vectorization using `float4`:**
+```cuda
+const float4* vec_input = reinterpret_cast<const float4*>(row_input);
+float4 v = vec_input[i];
+sum_sq += v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
+```
 
 ### Warp Shuffle Reductions
 ```cuda
@@ -98,9 +211,11 @@ constexpr int BLOCK_SIZE = 256;
 int num_blocks = (total_elements + BLOCK_SIZE - 1) / BLOCK_SIZE;
 ```
 
-For reduction ops (LayerNorm, RMSNorm):
+For reduction ops (LayerNorm, RMSNorm) with vectorization:
 ```cuda
-int threads = min(hidden_size, 1024);
+// Divide by 2 for bf16/fp16 vectorized access
+int threads = min(hidden_size / 2, MAX_THREADS);
+threads = max(threads, WARP_SIZE);
 threads = (threads + 32 - 1) / 32 * 32;  // Round to warp boundary
 ```
 
@@ -225,6 +340,9 @@ pipe.enable_model_cpu_offload()
 - Input layout: `[..., hidden_size]`
 - Epsilon default: 1e-6
 - **Weight may be None** if `elementwise_affine=False`
+- **Vectorization:** Use `__nv_bfloat162` for BF16, `__half2` for FP16, `float4` for FP32
+- **Performance:** 2.67x faster than PyTorch with vectorized implementation
+- **Bandwidth:** Achieves ~38% of H100's 3.35 TB/s theoretical bandwidth
 
 ### RoPE
 - 1D: `[batch, seq, heads, head_dim]` - for text
@@ -259,12 +377,41 @@ Quick fixes:
 - **isinstance() not matching**: Use `type(module).__name__` instead
 - **GEGLU not called**: Model uses GELU, not GEGLU
 - **Patching doesn't persist**: Inject before `enable_model_cpu_offload()`
+- **torch.compile fails with custom kernels**: See below
+
+### torch.compile Compatibility
+
+Custom CUDA kernels and `torch.compile` are **mutually exclusive** unless you register the kernel as a PyTorch custom op.
+
+**Error message:**
+```
+torch._dynamo.exc.Unsupported: Attempted to call function marked as skipped
+```
+
+**Workaround options:**
+1. Use `--use-optimized-kernels` without `--compile` (6% speedup)
+2. Use `--compile` without custom kernels (34% speedup)
+3. Register kernel as custom op (advanced, requires `torch.library`)
+
+**To register as custom op (for torch.compile compatibility):**
+```python
+import torch
+
+@torch.library.custom_op("ltx_kernels::rmsnorm", mutates_args={"out"})
+def rmsnorm(out: torch.Tensor, input: torch.Tensor, weight: torch.Tensor, eps: float) -> None:
+    ops.rmsnorm_forward(out, input.contiguous(), weight.contiguous(), eps)
+
+@rmsnorm.register_fake
+def _(out, input, weight, eps):
+    pass  # No shape changes
+```
 
 ## See Also
 
-- [ltx_kernel_injection_example.py](scripts/ltx_kernel_injection_example.py) - **Minimal working example (~150 lines) - START HERE**
+- [benchmark_example.py](scripts/benchmark_example.py) - **Benchmarking script for comparing optimized vs baseline - START HERE**
+- [ltx_kernel_injection_example.py](scripts/ltx_kernel_injection_example.py) - Minimal integration example (~150 lines)
 - [diffusers-integration.md](references/diffusers-integration.md) - Complete integration guide
 - [troubleshooting.md](references/troubleshooting.md) - Common issues and solutions
 - [kernel-templates.md](references/kernel-templates.md) - Complete kernel templates
 - [h100-optimization-guide.md](references/h100-optimization-guide.md) - Deep dive on H100 optimizations
-- [examples/ltx_video/generate_video.py](../../../examples/ltx_video/generate_video.py) - Full LTX-Video script
+- [examples/ltx_video/](../../../examples/ltx_video/) - Full LTX-Video example directory
