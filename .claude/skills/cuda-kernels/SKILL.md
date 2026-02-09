@@ -1,17 +1,19 @@
 ---
-name: h100-diffusers-kernels
-description: "Provides guidance for writing and benchmarking optimized CUDA kernels for H100 GPUs (sm_90) targeting diffusers library models like LTX-Video, Stable Diffusion, and DiT. Includes benchmarking scripts to compare kernel performance against baseline implementations."
+name: cuda-kernels
+description: "Provides guidance for writing and benchmarking optimized CUDA kernels for NVIDIA GPUs (H100, A100, T4) targeting HuggingFace diffusers and transformers libraries. Supports models like LTX-Video, Stable Diffusion, LLaMA, Mistral, and Qwen. Includes benchmarking scripts to compare kernel performance against baseline implementations."
 disable-model-invocation: false
 user-invocable: true
 allowed-tools: "Read, Grep, Glob, Bash"
-argument-hint: "kernel type: attention, rmsnorm, rope, adaln, geglu, benchmark"
+argument-hint: "kernel type: attention, rmsnorm, rope, adaln, geglu, benchmark, transformers, diffusers"
 ---
 
-# H100 CUDA Kernels for Diffusers
+# CUDA Kernels for Diffusers & Transformers
 
-This skill provides patterns and guidance for developing optimized CUDA kernels targeting NVIDIA H100 GPUs (compute capability 9.0) for use with the HuggingFace diffusers library.
+This skill provides patterns and guidance for developing optimized CUDA kernels targeting NVIDIA GPUs (H100, A100, T4) for use with HuggingFace **diffusers** and **transformers** libraries.
 
 ## Quick Start
+
+### Diffusers (Video/Image Generation)
 
 **For benchmarking kernel performance:**
 ```bash
@@ -26,25 +28,47 @@ python generate_video.py --use-optimized-kernels && \
 python generate_video.py --no-optimized-kernels --compile
 ```
 
-**For isolated kernel micro-benchmarks:**
+**For a minimal diffusers integration example (~150 lines):**
+```bash
+python scripts/ltx_kernel_injection_example.py
+```
+
+### Transformers (LLMs)
+
+**For a minimal transformers integration example (~120 lines):**
+```bash
+python scripts/transformers_injection_example.py
+```
+
+### Isolated Kernel Micro-benchmarks
+
 ```bash
 python benchmark_rmsnorm.py
 ```
 
-**For a minimal integration example (~150 lines):**
-```bash
-python scripts/ltx_kernel_injection_example.py
-```
+## Supported Libraries & Models
+
+| Library | Supported Models | Key Kernels |
+|---------|------------------|-------------|
+| **diffusers** | LTX-Video, Stable Diffusion, FLUX, DiT | RMSNorm, GEGLU, RoPE, AdaLN |
+| **transformers** | LLaMA, Mistral, Qwen, Falcon | RMSNorm, Attention |
+
+| GPU | Compute Capability | Guide |
+|-----|-------------------|-------|
+| H100 | sm_90 | [h100-optimization-guide.md](references/h100-optimization-guide.md) |
+| A100 | sm_80 | [a100-optimization-guide.md](references/a100-optimization-guide.md) |
+| T4 | sm_75 | [t4-optimization-guide.md](references/t4-optimization-guide.md) |
 
 ## When This Skill Applies
 
 Use this skill when:
 - **Benchmarking kernel performance** against baseline implementations
-- Writing new CUDA kernels for diffusion models
-- Optimizing existing kernels for H100 architecture
+- Writing new CUDA kernels for diffusion models or LLMs
+- Optimizing existing kernels for H100, A100, or T4 architecture
 - Implementing custom attention, normalization, or activation layers
-- Integrating kernels with diffusers pipelines (LTX-Video, Stable Diffusion, FLUX, DiT)
-- Debugging kernel performance issues on H100
+- Integrating kernels with **diffusers** pipelines (LTX-Video, Stable Diffusion, FLUX, DiT)
+- Integrating kernels with **transformers** models (LLaMA, Mistral, Qwen)
+- Debugging kernel performance issues on NVIDIA GPUs
 
 ## Working Example
 
@@ -124,14 +148,18 @@ The vectorized RMSNorm kernel achieves **2.67x average speedup** over PyTorch ba
 ```
 .claude/skills/h100-diffusers-kernels/
 ├── scripts/
-│   ├── benchmark_example.py        # End-to-end video generation benchmark
-│   ├── benchmark_rmsnorm.py        # Isolated RMSNorm micro-benchmark
-│   └── ltx_kernel_injection_example.py  # Minimal integration example
+│   ├── benchmark_example.py              # End-to-end video generation benchmark
+│   ├── benchmark_rmsnorm.py              # Isolated RMSNorm micro-benchmark
+│   ├── ltx_kernel_injection_example.py   # Minimal diffusers integration (~150 lines)
+│   └── transformers_injection_example.py # Minimal transformers integration (~120 lines)
 ├── references/
-│   ├── diffusers-integration.md    # Complete integration guide
+│   ├── diffusers-integration.md    # Complete diffusers integration guide
+│   ├── transformers-integration.md # Complete transformers integration guide
 │   ├── troubleshooting.md          # Common issues and solutions
 │   ├── kernel-templates.md         # CUDA kernel templates (includes vectorized)
-│   └── h100-optimization-guide.md  # H100 optimization deep dive
+│   ├── h100-optimization-guide.md  # H100 (Hopper) optimization deep dive
+│   ├── a100-optimization-guide.md  # A100 (Ampere) optimization deep dive
+│   └── t4-optimization-guide.md    # T4 (Turing) optimization deep dive
 └── SKILL.md                        # This file
 
 examples/ltx_video/                  # Complete working example
@@ -143,7 +171,9 @@ examples/ltx_video/                  # Complete working example
 └── setup.py                        # pip install -e .
 ```
 
-## H100 Architecture Reference
+## GPU Architecture Reference
+
+### H100 (Hopper) - Primary Target
 
 | Spec | Value | Optimization Impact |
 |------|-------|---------------------|
@@ -153,6 +183,18 @@ examples/ltx_video/                  # Complete working example
 | L2 Cache | 50 MB | Reuse across blocks |
 | Memory BW | 3.35 TB/s | Coalesced access critical |
 | Warp Size | 32 | All reductions use warp shuffles |
+
+### Quick Comparison (H100 vs A100 vs T4)
+
+| Spec | H100 | A100 | T4 |
+|------|------|------|-----|
+| SMs | 132 | 108 | 40 |
+| Memory BW | 3.35 TB/s | 2.0 TB/s | 320 GB/s |
+| Shared Mem/SM | 192 KB | 164 KB | 64 KB |
+| BF16 Support | Yes | Yes | **No (FP16 only)** |
+| Compute Cap | sm_90 | sm_80 | sm_75 |
+
+> See detailed guides: [H100](references/h100-optimization-guide.md) | [A100](references/a100-optimization-guide.md) | [T4](references/t4-optimization-guide.md)
 
 ## Core Kernel Patterns
 
@@ -250,11 +292,42 @@ src = ["kernel_src/your_kernel.cu"]
 cuda-capabilities = ["9.0"]
 ```
 
-## Diffusers Integration
+## Library Integration
+
+### Diffusers Integration (Video/Image Generation)
 
 > **See [diffusers-integration.md](references/diffusers-integration.md) for the complete guide.**
 
-### Critical Pitfalls
+### Transformers Integration (LLMs)
+
+> **See [transformers-integration.md](references/transformers-integration.md) for the complete guide.**
+
+**Key differences from diffusers:**
+- Transformers RMSNorm **always** has weights (no `elementwise_affine=False`)
+- Use `'RMSNorm' in class_name` to match LlamaRMSNorm, MistralRMSNorm, etc.
+- Check for `variance_epsilon` (LLaMA) or `eps` (others) for epsilon
+- No `set_processor()` pattern - use Flash Attention 2 instead
+
+**Minimal transformers pattern:**
+```python
+from transformers import AutoModelForCausalLM
+from ltx_kernels import rmsnorm
+
+def patch_rmsnorm(model):
+    for name, module in model.named_modules():
+        if 'RMSNorm' in type(module).__name__:
+            eps = getattr(module, 'variance_epsilon', None) or getattr(module, 'eps', 1e-6)
+            def make_forward(mod, epsilon):
+                def forward(x):
+                    return rmsnorm(x, mod.weight, eps=epsilon)
+                return forward
+            module.forward = make_forward(module, eps)
+
+model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf", torch_dtype=torch.bfloat16)
+patch_rmsnorm(model)
+```
+
+### Diffusers Critical Pitfalls
 
 #### 1. RMSNorm Weight May Be None
 
@@ -408,10 +481,21 @@ def _(out, input, weight, eps):
 
 ## See Also
 
+### Scripts
 - [benchmark_example.py](scripts/benchmark_example.py) - **Benchmarking script for comparing optimized vs baseline - START HERE**
-- [ltx_kernel_injection_example.py](scripts/ltx_kernel_injection_example.py) - Minimal integration example (~150 lines)
-- [diffusers-integration.md](references/diffusers-integration.md) - Complete integration guide
+- [ltx_kernel_injection_example.py](scripts/ltx_kernel_injection_example.py) - Minimal diffusers integration (~150 lines)
+- [transformers_injection_example.py](scripts/transformers_injection_example.py) - Minimal transformers/LLM integration (~120 lines)
+
+### Integration Guides
+- [diffusers-integration.md](references/diffusers-integration.md) - Complete diffusers pipeline integration
+- [transformers-integration.md](references/transformers-integration.md) - Complete transformers/LLM integration
+
+### GPU Optimization Guides
+- [h100-optimization-guide.md](references/h100-optimization-guide.md) - H100 (Hopper, sm_90) deep dive
+- [a100-optimization-guide.md](references/a100-optimization-guide.md) - A100 (Ampere, sm_80) deep dive
+- [t4-optimization-guide.md](references/t4-optimization-guide.md) - T4 (Turing, sm_75) deep dive
+
+### Reference
 - [troubleshooting.md](references/troubleshooting.md) - Common issues and solutions
 - [kernel-templates.md](references/kernel-templates.md) - Complete kernel templates
-- [h100-optimization-guide.md](references/h100-optimization-guide.md) - Deep dive on H100 optimizations
 - [examples/ltx_video/](../../../examples/ltx_video/) - Full LTX-Video example directory

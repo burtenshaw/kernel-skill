@@ -34,32 +34,68 @@ except ImportError:
     ops = None
 
 
-def _rmsnorm_impl(
+# =============================================================================
+# Register RMSNorm as PyTorch custom op for torch.compile compatibility
+# =============================================================================
+
+_CUSTOM_OP_REGISTERED = False
+
+if ops is not None:
+    try:
+        # Register as custom op (PyTorch 2.1+)
+        @torch.library.custom_op("ltx_kernels::rmsnorm_forward", mutates_args=())
+        def _rmsnorm_custom_op(
+            input: torch.Tensor,
+            weight: torch.Tensor,
+            eps: float,
+        ) -> torch.Tensor:
+            out = torch.empty_like(input)
+            ops.rmsnorm_forward(out, input.contiguous(), weight.contiguous(), eps)
+            return out
+
+        @_rmsnorm_custom_op.register_fake
+        def _rmsnorm_fake(input: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
+            return input.new_empty(input.shape)
+
+        _CUSTOM_OP_REGISTERED = True
+    except (AttributeError, Exception):
+        # torch.library.custom_op not available
+        pass
+
+
+def rmsnorm(
     input: torch.Tensor,
     weight: torch.Tensor,
     eps: float = 1e-6,
     out: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Internal implementation of RMSNorm."""
-    if out is None:
-        out = torch.empty_like(input)
+    """
+    RMS Layer Normalization (torch.compile compatible).
 
-    if ops is not None:
+    Formula: output = x * weight / sqrt(mean(x^2) + eps)
+
+    Args:
+        input: Input tensor of shape [..., hidden_size]
+        weight: Weight tensor of shape [hidden_size]
+        eps: Epsilon for numerical stability (default: 1e-6)
+        out: Optional output tensor (ignored when using custom op)
+
+    Returns:
+        Normalized tensor of same shape as input
+    """
+    if _CUSTOM_OP_REGISTERED:
+        # Use custom op (works with torch.compile)
+        return torch.ops.ltx_kernels.rmsnorm_forward(input, weight, eps)
+    elif ops is not None:
+        # Direct call (won't work with torch.compile)
+        if out is None:
+            out = torch.empty_like(input)
         ops.rmsnorm_forward(out, input.contiguous(), weight.contiguous(), eps)
+        return out
     else:
         # Pure PyTorch fallback
         variance = input.pow(2).mean(dim=-1, keepdim=True)
-        out = input * torch.rsqrt(variance + eps) * weight
-
-    return out
-
-
-# Make the kernel compatible with torch.compile
-try:
-    rmsnorm = torch.compiler.allow_in_graph(_rmsnorm_impl)
-except AttributeError:
-    # Older PyTorch versions without torch.compiler
-    rmsnorm = _rmsnorm_impl
+        return input * torch.rsqrt(variance + eps) * weight
 
 
 def rmsnorm_residual(
