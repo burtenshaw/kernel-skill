@@ -1,10 +1,10 @@
 ---
 name: cuda-kernels
-description: "Provides guidance for writing and benchmarking optimized CUDA kernels for NVIDIA GPUs (H100, A100, T4) targeting HuggingFace diffusers and transformers libraries. Supports models like LTX-Video, Stable Diffusion, LLaMA, Mistral, and Qwen. Includes benchmarking scripts to compare kernel performance against baseline implementations."
+description: "Provides guidance for writing and benchmarking optimized CUDA kernels for NVIDIA GPUs (H100, A100, T4) targeting HuggingFace diffusers and transformers libraries. Supports models like LTX-Video, Stable Diffusion, LLaMA, Mistral, and Qwen. Includes integration with HuggingFace Kernels Hub (get_kernel) for loading pre-compiled kernels. Includes benchmarking scripts to compare kernel performance against baseline implementations."
 disable-model-invocation: false
 user-invocable: true
 allowed-tools: "Read, Grep, Glob, Bash"
-argument-hint: "kernel type: attention, rmsnorm, rope, adaln, geglu, benchmark, transformers, diffusers"
+argument-hint: "kernel type: attention, rmsnorm, rope, adaln, geglu, benchmark, transformers, diffusers, huggingface-kernels, get_kernel"
 ---
 
 # CUDA Kernels for Diffusers & Transformers
@@ -38,6 +38,25 @@ python scripts/ltx_kernel_injection_example.py
 **For a minimal transformers integration example (~120 lines):**
 ```bash
 python scripts/transformers_injection_example.py
+```
+
+### HuggingFace Kernels Hub
+
+**Load pre-compiled kernels from HuggingFace Hub (no local compilation):**
+```python
+from kernels import get_kernel
+
+# Load optimized activation kernels
+activation = get_kernel("kernels-community/activation", version=1)
+
+# Use the kernel
+y = torch.empty_like(x)
+activation.gelu_fast(y, x)
+```
+
+**For a complete HuggingFace Kernels example:**
+```bash
+python scripts/huggingface_kernels_example.py
 ```
 
 ### Isolated Kernel Micro-benchmarks
@@ -146,21 +165,23 @@ The vectorized RMSNorm kernel achieves **2.67x average speedup** over PyTorch ba
 ## Project Structure
 
 ```
-.claude/skills/h100-diffusers-kernels/
+.claude/skills/cuda-kernels/
 ├── scripts/
 │   ├── benchmark_example.py              # End-to-end video generation benchmark
 │   ├── benchmark_rmsnorm.py              # Isolated RMSNorm micro-benchmark
 │   ├── ltx_kernel_injection_example.py   # Minimal diffusers integration (~150 lines)
-│   └── transformers_injection_example.py # Minimal transformers integration (~120 lines)
+│   ├── transformers_injection_example.py # Minimal transformers integration (~120 lines)
+│   └── huggingface_kernels_example.py    # HuggingFace Kernels Hub integration
 ├── references/
-│   ├── diffusers-integration.md    # Complete diffusers integration guide
-│   ├── transformers-integration.md # Complete transformers integration guide
-│   ├── troubleshooting.md          # Common issues and solutions
-│   ├── kernel-templates.md         # CUDA kernel templates (includes vectorized)
-│   ├── h100-optimization-guide.md  # H100 (Hopper) optimization deep dive
-│   ├── a100-optimization-guide.md  # A100 (Ampere) optimization deep dive
-│   └── t4-optimization-guide.md    # T4 (Turing) optimization deep dive
-└── SKILL.md                        # This file
+│   ├── diffusers-integration.md          # Complete diffusers integration guide
+│   ├── transformers-integration.md       # Complete transformers integration guide
+│   ├── huggingface-kernels-integration.md # HuggingFace Kernels Hub (get_kernel) guide
+│   ├── troubleshooting.md                # Common issues and solutions
+│   ├── kernel-templates.md               # CUDA kernel templates (includes vectorized)
+│   ├── h100-optimization-guide.md        # H100 (Hopper) optimization deep dive
+│   ├── a100-optimization-guide.md        # A100 (Ampere) optimization deep dive
+│   └── t4-optimization-guide.md          # T4 (Turing) optimization deep dive
+└── SKILL.md                              # This file
 
 examples/ltx_video/                  # Complete working example
 ├── kernel_src/
@@ -293,6 +314,35 @@ cuda-capabilities = ["9.0"]
 ```
 
 ## Library Integration
+
+### HuggingFace Kernels Hub (get_kernel)
+
+> **See [huggingface-kernels-integration.md](references/huggingface-kernels-integration.md) for the complete guide.**
+
+Load pre-compiled, optimized kernels directly from HuggingFace Hub without local compilation:
+
+```python
+from kernels import get_kernel, has_kernel
+
+# Check availability and load
+if has_kernel("kernels-community/activation"):
+    activation = get_kernel("kernels-community/activation", version=1)
+
+    # Use the kernel
+    x = torch.randn((4, 4), dtype=torch.float16, device="cuda")
+    y = torch.empty_like(x)
+    activation.gelu_fast(y, x)
+```
+
+**Key functions:**
+- `get_kernel(repo_id, version=None)` - Download and load kernel from Hub
+- `has_kernel(repo_id)` - Check if compatible build exists
+- `get_local_kernel(path)` - Load from local directory (development)
+
+**Popular community kernels:**
+- `kernels-community/activation` - GELU, SiLU, etc.
+- `kernels-community/flash-attn` - Flash Attention 2
+- `kernels-community/triton-layer-norm` - LayerNorm, RMSNorm
 
 ### Diffusers Integration (Video/Image Generation)
 
@@ -485,8 +535,10 @@ def _(out, input, weight, eps):
 - [benchmark_example.py](scripts/benchmark_example.py) - **Benchmarking script for comparing optimized vs baseline - START HERE**
 - [ltx_kernel_injection_example.py](scripts/ltx_kernel_injection_example.py) - Minimal diffusers integration (~150 lines)
 - [transformers_injection_example.py](scripts/transformers_injection_example.py) - Minimal transformers/LLM integration (~120 lines)
+- [huggingface_kernels_example.py](scripts/huggingface_kernels_example.py) - HuggingFace Kernels Hub integration
 
 ### Integration Guides
+- [huggingface-kernels-integration.md](references/huggingface-kernels-integration.md) - **HuggingFace Kernels Hub (get_kernel) - load pre-compiled kernels**
 - [diffusers-integration.md](references/diffusers-integration.md) - Complete diffusers pipeline integration
 - [transformers-integration.md](references/transformers-integration.md) - Complete transformers/LLM integration
 
@@ -499,3 +551,8 @@ def _(out, input, weight, eps):
 - [troubleshooting.md](references/troubleshooting.md) - Common issues and solutions
 - [kernel-templates.md](references/kernel-templates.md) - Complete kernel templates
 - [examples/ltx_video/](../../../examples/ltx_video/) - Full LTX-Video example directory
+
+### External Resources
+- [HuggingFace Kernels Documentation](https://huggingface.co/docs/kernels/en/index)
+- [HuggingFace Kernels GitHub](https://github.com/huggingface/kernels)
+- [Community Kernels on Hub](https://huggingface.co/kernels-community)
