@@ -255,3 +255,61 @@ ls torch-ext/ltx_kernels/_ops*.so
 # Try importing
 python -c "from ltx_kernels import rmsnorm; print('OK')"
 ```
+
+### 13. Kernel Import Fails Due to Python Version Mismatch
+
+**Problem:** The kernel .so file exists but import fails silently, causing fallback to PyTorch:
+```python
+from my_kernels import rmsnorm
+# ops is None, using PyTorch fallback (no speedup!)
+```
+
+**Diagnosis:**
+```bash
+# Check Python version
+python3 --version  # e.g., Python 3.13.7
+
+# Check .so file Python version
+ls torch-ext/my_kernels/*.so
+# _ops.cpython-39-x86_64-linux-gnu.so  <-- Built for Python 3.9!
+```
+
+**Root Cause:** The kernel was built with a different Python version than the one running. This commonly happens when:
+- Building with system Python but running in a venv
+- Using `pip install -e .` without activating the correct environment
+
+**Solution:**
+```bash
+# 1. Remove the mismatched .so file
+rm torch-ext/my_kernels/_ops*.so
+
+# 2. Activate the correct environment
+source .venv/bin/activate
+
+# 3. Rebuild with the correct Python
+uv pip install -e .
+
+# 4. Verify the .so matches your Python version
+ls torch-ext/my_kernels/*.so
+# _ops.cpython-313-x86_64-linux-gnu.so  <-- Now matches Python 3.13!
+```
+
+**Prevention:** Always build kernels from within the same virtual environment you'll use to run them.
+
+### 14. Kernel Ops Module is None (Silent Fallback)
+
+**Problem:** Benchmark shows ~1.0x speedup (no improvement), indicating PyTorch fallback.
+
+**Diagnosis:**
+```python
+import my_kernels
+print("ops loaded:", my_kernels.ops is not None)  # False = problem!
+print("Custom op registered:", my_kernels._CUSTOM_OP_REGISTERED)  # False = fallback
+```
+
+**Solution:** This usually indicates either:
+1. Python version mismatch (see issue #13 above)
+2. CUDA version mismatch between build and runtime
+3. Missing .so file (kernel not built)
+
+Check all three and rebuild if needed.

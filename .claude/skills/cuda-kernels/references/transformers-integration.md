@@ -66,6 +66,24 @@ for name, module in model.named_modules():
 | `model.layers.*.input_layernorm` | Qwen2RMSNorm | Yes | Pre-attention norm |
 | `model.layers.*.post_attention_layernorm` | Qwen2RMSNorm | Yes | Pre-FFN norm |
 
+### Qwen3
+
+| Component | Class | Has Weight | Notes |
+|-----------|-------|------------|-------|
+| `model.norm` | Qwen3RMSNorm | Yes | Final layer norm |
+| `model.layers.*.input_layernorm` | Qwen3RMSNorm | Yes | Pre-attention norm |
+| `model.layers.*.post_attention_layernorm` | Qwen3RMSNorm | Yes | Pre-FFN norm |
+
+**Qwen3-8B Configuration:**
+| Parameter | Value |
+|-----------|-------|
+| hidden_size | 4096 |
+| num_hidden_layers | 32 |
+| rms_norm_eps | 1e-6 |
+| RMSNorm modules | 65 (32 * 2 + 1) |
+
+> **Working Example:** See `examples/qwen3_8b/` for a complete Qwen3-8B kernel implementation with benchmarks.
+
 ### Kernel Applicability
 
 | Kernel | LLaMA | Mistral | Qwen | Notes |
