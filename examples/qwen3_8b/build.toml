@@ -1,0 +1,24 @@
+# Qwen3-8B Custom Kernels - Build Configuration
+# Targets NVIDIA H100 (sm_90) for optimal performance
+#
+# Build with pip/uv:
+#   uv pip install -e .
+
+[general]
+name = "qwen3_kernels"
+backends = ["cuda"]
+
+[general.cuda]
+# H100 compute capability (sm_90)
+
+[torch]
+src = [
+    "torch-ext/torch_binding.cpp",
+]
+
+# RMSNorm kernel - used 65 times in Qwen3-8B (32 layers * 2 + 1 final)
+[kernel.rmsnorm]
+backend = "cuda"
+depends = []
+src = ["kernel_src/rmsnorm.cu"]
+cuda-capabilities = ["9.0"]

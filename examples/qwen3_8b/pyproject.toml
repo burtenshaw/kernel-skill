@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "torch>=2.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qwen3-kernels"
+version = "0.1.0"
+description = "Optimized CUDA kernels for Qwen3-8B on H100 GPUs"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+transformers = [
+    "transformers>=4.45.0",
+    "accelerate>=0.20.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["torch-ext"]
+include = ["qwen3_kernels*"]

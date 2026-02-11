@@ -1,0 +1,39 @@
+{
+  "metadata": {
+    "model": "Qwen/Qwen3-8B",
+    "device": "NVIDIA H100 80GB HBM3",
+    "precision": "bfloat16",
+    "hidden_size": 4096,
+    "rms_norm_eps": 1e-6,
+    "num_rmsnorm_modules": 65,
+    "benchmark_date": "2026-02-11"
+  },
+  "rmsnorm_microbenchmarks": [
+    {"config": "[1x128x4096]", "batch": 1, "seq_len": 128, "hidden_size": 4096, "custom_ms": 0.040, "pytorch_ms": 0.062, "speedup": 1.58},
+    {"config": "[1x512x4096]", "batch": 1, "seq_len": 512, "hidden_size": 4096, "custom_ms": 0.038, "pytorch_ms": 0.064, "speedup": 1.69},
+    {"config": "[1x1024x4096]", "batch": 1, "seq_len": 1024, "hidden_size": 4096, "custom_ms": 0.037, "pytorch_ms": 0.071, "speedup": 1.90},
+    {"config": "[1x2048x4096]", "batch": 1, "seq_len": 2048, "hidden_size": 4096, "custom_ms": 0.045, "pytorch_ms": 0.091, "speedup": 2.03},
+    {"config": "[1x4096x4096]", "batch": 1, "seq_len": 4096, "hidden_size": 4096, "custom_ms": 0.071, "pytorch_ms": 0.150, "speedup": 2.12},
+    {"config": "[4x512x4096]", "batch": 4, "seq_len": 512, "hidden_size": 4096, "custom_ms": 0.056, "pytorch_ms": 0.093, "speedup": 1.67},
+    {"config": "[8x256x4096]", "batch": 8, "seq_len": 256, "hidden_size": 4096, "custom_ms": 0.045, "pytorch_ms": 0.092, "speedup": 2.06},
+    {"config": "[1x8192x4096]", "batch": 1, "seq_len": 8192, "hidden_size": 4096, "custom_ms": 0.109, "pytorch_ms": 0.269, "speedup": 2.47}
+  ],
+  "summary": {
+    "average_speedup": 1.94,
+    "max_speedup": 2.47,
+    "min_speedup": 1.58
+  },
+  "bandwidth_analysis": {
+    "config": "[1x2048x4096]",
+    "total_data_mb": 33.56,
+    "latency_ms": 0.045,
+    "achieved_bandwidth_gbps": 747.1,
+    "theoretical_bandwidth_gbps": 3350,
+    "efficiency_percent": 22.3
+  },
+  "correctness": {
+    "max_absolute_difference": 0.03125,
+    "max_relative_difference": 0.008789062,
+    "passed": true
+  }
+}
