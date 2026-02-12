@@ -1,10 +1,10 @@
 ---
 name: cuda-kernels
-description: "Provides guidance for writing and benchmarking optimized CUDA kernels for NVIDIA GPUs (H100, A100, T4) targeting HuggingFace diffusers and transformers libraries. Supports models like LTX-Video, Stable Diffusion, LLaMA, Mistral, and Qwen. Includes integration with HuggingFace Kernels Hub (get_kernel) for loading pre-compiled kernels. Includes benchmarking scripts to compare kernel performance against baseline implementations."
+description: "Provides guidance for writing and benchmarking optimized CUDA kernels for NVIDIA GPUs (H100, A100, T4) targeting HuggingFace diffusers and transformers libraries. Supports models like LTX-Video, Stable Diffusion, LLaMA, Mistral, Qwen, and Qwen3. Includes integration with HuggingFace Kernels Hub (get_kernel) for loading pre-compiled kernels. Includes benchmarking scripts to compare kernel performance against baseline implementations."
 disable-model-invocation: false
 user-invocable: true
 allowed-tools: "Read, Grep, Glob, Bash"
-argument-hint: "kernel type: attention, rmsnorm, rope, adaln, geglu, benchmark, transformers, diffusers, huggingface-kernels, get_kernel"
+argument-hint: "kernel type: attention, rmsnorm, rope, adaln, geglu, benchmark, transformers, diffusers, huggingface-kernels, get_kernel, qwen3"
 ---
 
 # CUDA Kernels for Diffusers & Transformers
@@ -70,7 +70,7 @@ python benchmark_rmsnorm.py
 | Library | Supported Models | Key Kernels |
 |---------|------------------|-------------|
 | **diffusers** | LTX-Video, Stable Diffusion, FLUX, DiT | RMSNorm, GEGLU, RoPE, AdaLN |
-| **transformers** | LLaMA, Mistral, Qwen, Falcon | RMSNorm, Attention |
+| **transformers** | LLaMA, Mistral, Qwen, Qwen3, Falcon | RMSNorm, Attention |
 
 | GPU | Compute Capability | Guide |
 |-----|-------------------|-------|
@@ -89,13 +89,27 @@ Use this skill when:
 - Integrating kernels with **transformers** models (LLaMA, Mistral, Qwen)
 - Debugging kernel performance issues on NVIDIA GPUs
 
-## Working Example
+## Working Examples
 
+### LTX-Video (Diffusers)
 A complete working example is available at `examples/ltx_video/`. This demonstrates:
 - Custom CUDA kernels (RMSNorm, RoPE 3D, GEGLU, AdaLN)
 - Build system setup with setup.py, build.toml, and flake.nix
 - PyTorch C++ bindings and Python API
 - Benchmarking script for comparing optimized vs baseline performance
+
+### Qwen3-8B (Transformers)
+A complete working example for LLMs is available at `examples/qwen3_8b/`. This demonstrates:
+- Vectorized RMSNorm kernel optimized for hidden_size=4096
+- Transformers model integration pattern
+- **1.94x average speedup** over PyTorch baseline (up to 2.47x for long sequences)
+- torch.compile compatible via custom op registration
+
+```bash
+cd examples/qwen3_8b
+uv pip install -e .
+python benchmark_rmsnorm.py
+```
 
 ## Benchmarking Kernels
 
