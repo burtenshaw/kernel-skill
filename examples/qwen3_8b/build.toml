@@ -1,24 +1,28 @@
 # Qwen3-8B Custom Kernels - Build Configuration
-# Targets NVIDIA H100 (sm_90) for optimal performance
+# Targets Hopper-class GPUs (H100/H200, sm_90) for optimal performance
 #
-# Build with pip/uv:
-#   uv pip install -e .
+# Build with Nix + kernel-builder:
+#   nix flake update
+#   nix run .#build-and-copy -L
 
 [general]
 name = "qwen3_kernels"
+version = 1
 backends = ["cuda"]
 
 [general.cuda]
-# H100 compute capability (sm_90)
+# Hopper compute capability (sm_90)
 
 [torch]
 src = [
     "torch-ext/torch_binding.cpp",
+    "torch-ext/torch_binding.h",
 ]
 
-# RMSNorm kernel - used 65 times in Qwen3-8B (32 layers * 2 + 1 final)
+# RMSNorm kernel - used 65 times in Qwen3-8B (32 layers * 2 + 1 final).
+# We pin to sm_90 for a Hopper-only demo; widen this list to support A100.
 [kernel.rmsnorm]
 backend = "cuda"
-depends = []
+depends = ["torch"]
 src = ["kernel_src/rmsnorm.cu"]
 cuda-capabilities = ["9.0"]

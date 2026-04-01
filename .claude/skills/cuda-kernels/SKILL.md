@@ -103,12 +103,12 @@ A complete working example for LLMs is available at `examples/qwen3_8b/`. This d
 - Vectorized RMSNorm kernel optimized for hidden_size=4096
 - Transformers model integration pattern
 - **1.94x average speedup** over PyTorch baseline (up to 2.47x for long sequences)
-- torch.compile compatible via custom op registration
+- Kernel Hub packaging and published-artifact benchmarking via HF Jobs
 
 ```bash
 cd examples/qwen3_8b
-uv pip install -e .
-python benchmark_rmsnorm.py
+python benchmark_rmsnorm.py --warmup 20 --iterations 100
+uv run scripts/hf_jobs_benchmark.py --repo-id <namespace>/<repo>
 ```
 
 ## Benchmarking Kernels

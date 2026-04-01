@@ -1,11 +1,13 @@
 """
-Build script for Qwen3-8B custom CUDA kernels.
+Legacy local build script for the Qwen3-8B RMSNorm kernel demo.
 
 Usage:
     pip install -e .
 
-Or build only:
-    python setup.py build_ext --inplace
+This path is useful for quick local smoke tests, but the canonical Hub build
+and publish flow for this demo is:
+    nix flake update
+    nix run .#build-and-copy -L
 """
 
 from setuptools import setup, find_packages

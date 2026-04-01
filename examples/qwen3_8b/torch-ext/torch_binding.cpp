@@ -4,10 +4,20 @@
  */
 
 #include <torch/extension.h>
+#include <torch/library.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 #include <c10/cuda/CUDAGuard.h>
+
+#include "torch_binding.h"
+
+#if __has_include("registration.h")
+#include "registration.h"
+#define QWEN3_KERNEL_BUILDER 1
+#else
+#define QWEN3_KERNEL_BUILDER 0
+#endif
 
 // External declarations for CUDA kernel launch functions
 extern "C" {
@@ -20,7 +30,7 @@ void rmsnorm_forward_fp32(float*, const float*, const float*, int, int, int, flo
 // RMSNorm Binding
 // ============================================================================
 
-void rmsnorm_forward(
+void rmsnorm(
     torch::Tensor& output,
     const torch::Tensor& input,
     const torch::Tensor& weight,
@@ -30,6 +40,12 @@ void rmsnorm_forward(
     TORCH_CHECK(weight.is_cuda(), "weight must be a CUDA tensor");
     TORCH_CHECK(output.is_cuda(), "output must be a CUDA tensor");
     TORCH_CHECK(input.is_contiguous(), "input must be contiguous");
+    TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
+    TORCH_CHECK(output.is_contiguous(), "output must be contiguous");
+    TORCH_CHECK(input.scalar_type() == weight.scalar_type(), "input and weight must have the same dtype");
+    TORCH_CHECK(output.scalar_type() == input.scalar_type(), "output must match the input dtype");
+    TORCH_CHECK(input.dim() >= 1, "input must have at least one dimension");
+    TORCH_CHECK(weight.dim() == 1, "weight must be a 1D tensor");
 
     const at::cuda::CUDAGuard device_guard(input.device());
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
@@ -37,6 +53,8 @@ void rmsnorm_forward(
     const int ndim = input.dim();
     const int hidden_size = input.size(ndim - 1);
     const int64_t num_tokens = input.numel() / hidden_size;
+    TORCH_CHECK(weight.numel() == hidden_size, "weight size must match the hidden dimension");
+    TORCH_CHECK(output.sizes() == input.sizes(), "output must match the input shape");
 
     const int batch_size = 1;
     const int seq_len = num_tokens;
@@ -71,6 +89,15 @@ void rmsnorm_forward(
 // Module Registration
 // ============================================================================
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("rmsnorm_forward", &rmsnorm_forward, "RMSNorm forward (CUDA)");
+#if QWEN3_KERNEL_BUILDER
+TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
+    ops.def("rmsnorm(Tensor! out, Tensor input, Tensor weight, float eps) -> ()");
+    ops.impl("rmsnorm", torch::kCUDA, &rmsnorm);
 }
+
+REGISTER_EXTENSION(TORCH_EXTENSION_NAME)
+#else
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("rmsnorm", &rmsnorm, "RMSNorm forward (CUDA)");
+}
+#endif
