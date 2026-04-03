@@ -45,6 +45,11 @@ def parse_args() -> argparse.Namespace:
         help="GitHub repo to clone (default: huggingface/kernel-skill)",
     )
     parser.add_argument(
+        "--branch",
+        default=None,
+        help="Git branch to clone (default: repository default branch)",
+    )
+    parser.add_argument(
         "--flavor",
         default="h200",
         help="HF Jobs hardware flavor (default: h200)",
@@ -71,6 +76,7 @@ def build_publish_benchmark_script(
     warmup: int,
     iterations: int,
     github_repo: str,
+    branch: str | None = None,
 ) -> str:
     """Generate the bash script to run on HF Jobs."""
     return "\n".join(
@@ -102,7 +108,7 @@ def build_publish_benchmark_script(
             "# Step 3: Clone the repo",
             "# ========================================",
             f"echo '=== Cloning {github_repo} ==='",
-            f"git clone --depth 1 {github_repo} /workspace/kernel-skill",
+            f"git clone --depth 1{' --branch ' + branch if branch else ''} {github_repo} /workspace/kernel-skill",
             "cd /workspace/kernel-skill/examples/qwen3_8b",
             "",
             "# ========================================",
@@ -180,6 +186,7 @@ def main() -> int:
         args.warmup,
         args.iterations,
         args.github_repo,
+        args.branch,
     )
 
     # Run the job on H200 with Python image + Nix
