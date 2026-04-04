@@ -126,7 +126,7 @@ def build_publish_benchmark_script(
             "# Step 5: Publish to Hub",
             "# ========================================",
             "echo '=== Publishing to Hub ==='",
-            f"hf repo create {repo_id} --type model || true",
+            f"hf repo create {repo_id} --type kernel || true",
             f"kernels upload ./build --repo-id {repo_id}",
             "",
             "# ========================================",

@@ -14,6 +14,7 @@
 
   outputs = { self, kernel-builder }:
     kernel-builder.lib.genFlakeOutputs {
+      inherit self;
       path = ./.;
     };
 }
